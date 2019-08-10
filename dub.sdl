@@ -1,0 +1,36 @@
+name "dafl-lib"
+description "A library for communicating with AFL via shared memory"
+authors "Joakim Brännström"
+copyright "Copyright © 2019, Joakim Brännström"
+license "BSL-1.0"
+
+dependency "colorlog" version="~>0.0.2"
+//dependency "ggplotd" version="~>1.1"
+//dependency "optional" version="~>1.0"
+dependency "sumtype" version="~>0.8"
+dependency "io" version="~>0.2"
+dependency "iopipe" version="~>0.1"
+
+targetPath "build"
+
+configuration "application" {
+    targetType "library"
+}
+
+configuration "unittest" {
+    dependency "unit-threaded" version="~>0.10"
+    targetType "executable"
+    targetName "unittest"
+    mainSourceFile "build/ut.d"
+    preBuildCommands "dub run unit-threaded -c gen_ut_main -- -f build/ut.d"
+    excludedSourceFiles "source/app.d"
+}
+
+// redirect testing which is primarily integration testing
+configuration "integration_test" {
+    targetType "executable"
+    targetName "integration_test"
+
+    excludedSourceFiles "source/*"
+    sourceFiles "test/redirect.d"
+}

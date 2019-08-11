@@ -1,4 +1,4 @@
-# dafl
+# dafl [![Build Status](https://dev.azure.com/wikodes/wikodes/_apis/build/status/joakim-brannstrom.dafl?branchName=master)](https://dev.azure.com/wikodes/wikodes/_build/latest?definitionId=9&branchName=master)
 
 **dafl** is a library for communicating with afl (american fuzzy lop).
 

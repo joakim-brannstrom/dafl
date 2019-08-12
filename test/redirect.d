@@ -22,5 +22,8 @@ int main(string[] args) {
         return null;
     }();
 
+    rmdirRecurse("build/test").collectException;
+    mkdirRecurse("build/test").collectException;
+
     return spawnProcess(["dub", "test", "--"] ~ args).wait;
 }

@@ -151,18 +151,25 @@ struct Afl(ConfigT) {
         // the value, but if we don't read it, the fork server eventually
         // blocks, and then we block on the call to _forkserver_write
         // below.
+        logger.trace("Waiting for forkserver ping");
         server.discarServerPing;
+
+        logger.trace("Spawning child");
         auto child = conf.spawn();
 
         // TODO: add a static if to check if it is a "fork" or separate process
 
+        logger.tracef("Sending PID %s to forkserver", child.pid);
         server.write(child.pid);
 
+        logger.trace("Updating trace data");
         const int status = child.wait;
         foreach (const t; child.trace()) {
+            logger.trace("Trace ", t);
             shm.update(t);
         }
 
+        logger.trace("Sending status");
         server.write(status);
     }
 }
@@ -367,6 +374,7 @@ struct SpawnProcess {
     }
 
     Process opCall() @safe const {
+        logger.tracef("Spawning %-(%s %)", cmd);
         return Process(pipeProcess(cmd, std.process.Redirect.stdout | std.process.Redirect.stderrToStdout,
                 null, std.process.Config.retainStdin));
     }
@@ -392,6 +400,8 @@ struct SpawnProcess {
                 if (res.terminated) {
                     return res.status;
                 }
+
+                logger.trace(!readData.empty, "Stdout is ", readData);
 
                 // TODO: maybe this sleep isn't necessary if rawRead blocks if there are no data.
                 // TODO: this could be made on the fly too. I mean, instead of
@@ -447,6 +457,14 @@ struct SpawnProcess {
         bool empty() @safe pure nothrow const @nogc {
             return counter == 0;
         }
+    }
+}
+
+@("shall be a range that checksums the data in blocks")
+unittest {
+    ubyte[] data = [10];
+    foreach (const t; SpawnProcess.TraceRange(data)) {
+        t.shouldEqual(25357);
     }
 }
 

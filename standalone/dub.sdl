@@ -1,4 +1,4 @@
-name "dafl-exec"
+name "dafl-standalone"
 description "dafl for fuzzy testing a binary and mapping the output to afl"
 authors "Joakim Brännström"
 copyright "Copyright © 2019, Joakim Brännström"
@@ -8,3 +8,4 @@ dependency "colorlog" version="~>0.0.2"
 dependency "dafl-lib" path=".."
 
 targetPath "build"
+targetName "dafl"

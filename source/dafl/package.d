@@ -85,9 +85,59 @@ version (unittest) {
     import unit_threaded.assertions;
 }
 
-auto defaultProcessFuzzer(string[] cmd) {
-    auto conf = Config!(AflBasicConstants, SpawnProcess)(SpawnProcess(cmd));
+auto defaultProcessFuzzer(CallbackT = DefaultCallback)(string[] cmd,
+        Flag!"stdinAsArgument" stdinAsArgument = No.stdinAsArgument,
+        CallbackT callback = CallbackT.init) {
+    static if (is(CallbackT == DefaultCallback)) {
+        if (callback is null)
+            callback = new DefaultCallback;
+    }
+
+    auto conf = Config!(AflBasicConstants, SpawnProcess!CallbackT, CallbackT)(
+            SpawnProcess!CallbackT(cmd, callback), callback);
     return makeAfl(conf);
+}
+
+@safe class DefaultCallback {
+    void begin() {
+        logger.trace("Waiting for forkserver ping");
+    }
+
+    void preSpawnChild() {
+        logger.trace("Spawning child");
+    }
+
+    void postSpawnChild(T)(ref T child_) {
+        logger.tracef("Sending PID %s to forkserver", child_.pid);
+    }
+
+    void preUpdateTrace() {
+        logger.trace("Updating trace data");
+    }
+
+    void updateTrace(uint t) {
+        logger.trace("Trace ", t);
+    }
+
+    void preSendStatus(int status) {
+        logger.trace("Sending status ", status);
+    }
+
+    void spawnCmd(const string[] cmd) {
+        logger.tracef("Spawning %-(%s %)", cmd);
+    }
+
+    void stdinFromAfl(ubyte[] data) {
+        logger.trace("stdin from afl: ", data);
+    }
+
+    void spawnStdout(ubyte[] data) {
+        logger.trace(!data.empty, "spawn stdout ", data);
+    }
+
+    void end() {
+        logger.trace("Done");
+    }
 }
 
 /** Thrown when an error occurs that is unrecoverable.
@@ -115,9 +165,12 @@ struct AflBasicConstants {
  * Params:
  * SpawnT = ?
  */
-struct Config(ConstantsT, SpawnT) {
+struct Config(ConstantsT, SpawnT, CallbackT_) {
     alias Constants = ConstantsT;
+    alias CallbackT = CallbackT_;
+
     SpawnT spawn;
+    CallbackT callback;
 }
 
 /**
@@ -151,26 +204,37 @@ struct Afl(ConfigT) {
         // the value, but if we don't read it, the fork server eventually
         // blocks, and then we block on the call to _forkserver_write
         // below.
-        logger.trace("Waiting for forkserver ping");
+        static if (hasMember!(conf.CallbackT, "begin"))
+            conf.callback.begin;
+
         server.discarServerPing;
 
-        logger.trace("Spawning child");
+        static if (hasMember!(conf.CallbackT, "preSpawnChild"))
+            conf.callback.preSpawnChild;
         auto child = conf.spawn();
 
         // TODO: add a static if to check if it is a "fork" or separate process
 
-        logger.tracef("Sending PID %s to forkserver", child.pid);
+        static if (hasMember!(conf.CallbackT, "postSpawnChild"))
+            conf.callback.postSpawnChild(child);
+
         server.write(child.pid);
 
-        logger.trace("Updating trace data");
+        static if (hasMember!(conf.CallbackT, "preUpdateTrace"))
+            conf.callback.preUpdateTrace();
         const int status = child.wait;
         foreach (const t; child.trace()) {
-            logger.trace("Trace ", t);
+            static if (hasMember!(conf.CallbackT, "updateTrace"))
+                conf.callback.updateTrace(t);
             shm.update(t);
         }
 
-        logger.trace("Sending status");
+        static if (hasMember!(conf.CallbackT, "preSendStatus"))
+            conf.callback.preSendStatus(status);
         server.write(status);
+
+        static if (hasMember!(conf.CallbackT, "end"))
+            conf.callback.end();
     }
 }
 
@@ -289,8 +353,7 @@ ForkServer forkServer(int forkSrvFd) @trusted {
     return rval;
 }
 
-/**
- * Returns the location in the AFL shared memory to write the given trace data
+/** Returns the location in the AFL shared memory to write the given trace data
  * to.
  *
  * Borrowed from afl-python for consistency
@@ -313,9 +376,10 @@ uint basicHash(const(ubyte)[] data) @safe pure nothrow @nogc {
     return h;
 }
 
-/**
- * Returns the location in the AFL shared memory to write the given trace data
+/** Returns the location in the AFL shared memory to write the given trace data
  * to.
+ *
+ * Use this when you want to mix in a line number with the hash.
  *
  * Borrowed from afl-python for consistency
  * https://github.com/jwilk/python-afl/blob/8df6bfefac5de78761254bf5d7724e0a52d254f5/afl.pyx#L74-L87
@@ -364,23 +428,51 @@ struct AflHashPath(alias hashFn, alias hashOffsetFn, ConstantsT) {
 /** Use for testing a binary to observer how its output data is changed
  * depending on the input.
  */
-struct SpawnProcess {
+struct SpawnProcess(CallbackT) {
     static import std.process;
 
     string[] cmd;
+    CallbackT callback;
 
-    this(string[] cmd) {
+    this(string[] cmd, CallbackT callback) {
         this.cmd = cmd;
+        this.callback = callback;
     }
 
-    Process opCall() @safe const {
-        logger.tracef("Spawning %-(%s %)", cmd);
-        return Process(pipeProcess(cmd, std.process.Redirect.stdout | std.process.Redirect.stderrToStdout,
-                null, std.process.Config.retainStdin));
+    Process opCall() @trusted {
+        import core.sys.posix.fcntl : fcntl, F_SETFL, F_GETFL, O_NONBLOCK;
+        static import core.sys.posix.unistd;
+
+        auto old_fcntl = fcntl(stdin.fileno, F_GETFL);
+        // stdin must be non blocking or the loop will lockup.
+        fcntl(stdin.fileno, F_SETFL, old_fcntl | O_NONBLOCK);
+
+        callback.spawnCmd(cmd);
+
+        auto rval = Process(pipeProcess(cmd, std.process.Redirect.all), callback);
+
+        // drain stdin to replicate the data to the process.
+        // Config.retainStdout did not work
+        ubyte[1024] buf;
+        while (true) {
+            const len = core.sys.posix.unistd.read(stdin.fileno, &buf[0], buf.length);
+            if (len <= 0)
+                break;
+            callback.stdinFromAfl(buf[0 .. len]);
+            // avoids a crash if stdin is not open for writing.
+            core.sys.posix.unistd.write(rval.proc.stdin.fileno, &buf[0], buf.length);
+        }
+
+        rval.proc.stdin.close;
+
+        fcntl(stdin.fileno, F_SETFL, old_fcntl);
+
+        return rval;
     }
 
     static struct Process {
         ProcessPipes proc;
+        CallbackT callback;
         Appender!(ubyte[]) data;
 
         auto pid() {
@@ -401,7 +493,7 @@ struct SpawnProcess {
                     return res.status;
                 }
 
-                logger.trace(!readData.empty, "Stdout is ", readData);
+                callback.spawnStdout(readData);
 
                 // TODO: maybe this sleep isn't necessary if rawRead blocks if there are no data.
                 // TODO: this could be made on the fly too. I mean, instead of
@@ -423,13 +515,14 @@ struct SpawnProcess {
 
         const(ubyte)[] data;
         AflHashPath!(basicHash, basicHash, AflBasicConstants) path;
-        uint counter = 1;
+        bool empty_;
         uint curr;
 
         this(const(ubyte)[] data) {
             this.data = data;
+            empty_ = data.empty;
 
-            if (!data.empty)
+            if (!empty_)
                 popFront;
         }
 
@@ -441,21 +534,19 @@ struct SpawnProcess {
         void popFront() @safe pure nothrow {
             assert(!empty, "Can't pop front of an empty range");
 
-            counter++;
-
             if (data.length == 0) {
-                counter = 0;
+                empty_ = true;
             } else if (data.length < Sz) {
-                curr = path.next(PathNode(data[0 .. $], counter));
+                curr = path.next(PathNode(data[0 .. $], 0));
                 data = null;
             } else {
-                curr = path.next(PathNode(data[0 .. 8], counter));
+                curr = path.next(PathNode(data[0 .. 8], 0));
                 data = data[Sz .. $];
             }
         }
 
         bool empty() @safe pure nothrow const @nogc {
-            return counter == 0;
+            return empty_;
         }
     }
 }
@@ -463,8 +554,8 @@ struct SpawnProcess {
 @("shall be a range that checksums the data in blocks")
 unittest {
     ubyte[] data = [10];
-    foreach (const t; SpawnProcess.TraceRange(data)) {
-        t.shouldEqual(25357);
+    foreach (const t; SpawnProcess!DefaultCallback.TraceRange(data)) {
+        t.shouldEqual(27869);
     }
 }
 
@@ -620,7 +711,7 @@ unittest {
     env.interact;
     env.stopClient;
 
-    // the stream from echo is 10 bytes which mean that the initial and the 10
+    // the stream from tee is 10 bytes which mean that the initial and the 10
     // bytes result in three updates.
     env.area.sum.shouldEqual(3);
 }

@@ -31,7 +31,7 @@ int main(string[] args) {
     // dfmt off
     return conf.data.visit!(
           (Config.Help a) => cli(conf),
-          (Config.Exec a) => cli(a),
+          (Config.Exec a) => cli(a, conf.global.logFile),
     );
     // dfmt on
 }
@@ -43,11 +43,27 @@ int cli(Config conf) {
     return 0;
 }
 
-int cli(Config.Exec conf) {
+int cli(Config.Exec conf, string logfile) {
     import dafl;
 
+    static class FuzzLogger : DefaultCallback {
+        string logfile;
+
+        this(string logfile) {
+            this.logfile = logfile;
+        }
+
+        override void end() {
+            logger.trace("Done");
+            if (!logfile.empty) {
+                File(logfile, "w").write();
+            }
+        }
+    }
+
     logger.info("Waiting for afl forkserver to request data");
-    auto afl = defaultProcessFuzzer(conf.cmd);
+    auto afl = defaultProcessFuzzer(conf.cmd,
+            conf.stdinAsArgument.to!(Flag!"stdinAsArgument"), new FuzzLogger(logfile));
     afl.run;
 
     return 0;
@@ -62,8 +78,9 @@ struct Config {
     }
 
     struct Exec {
-        string[] cmd;
+        bool stdinAsArgument;
         std.getopt.GetoptResult helpInfo;
+        string[] cmd;
     }
 
     struct Global {
@@ -152,6 +169,7 @@ Config parseUserArgs(string[] args) {
             // dfmt off
             data.helpInfo = std.getopt.getopt(args,
                 "c", "Part of the command to execute. Use multiple to build it", &data.cmd,
+                "stdin-as-arg", "Stdin is converted to an argument to the program", &data.stdinAsArgument,
                 );
             // dfmt on
         }

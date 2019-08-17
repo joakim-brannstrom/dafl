@@ -62,8 +62,17 @@ int cli(Config.Exec conf, string logfile) {
     }
 
     logger.info("Waiting for afl forkserver to request data");
-    auto afl = defaultProcessFuzzer(conf.cmd, new FuzzLogger(logfile));
-    afl.run;
+    final switch (conf.hash) {
+    case HashType.block:
+        auto afl = defaultProcessFuzzer(conf.cmd, new FuzzLogger(logfile));
+        afl.run;
+        break;
+    case HashType.line:
+        auto afl = defaultProcessFuzzer!(DefaultCallback,
+                TraceLineRange)(conf.cmd, new FuzzLogger(logfile));
+        afl.run;
+        break;
+    }
 
     return 0;
 }
@@ -77,7 +86,7 @@ struct Config {
     }
 
     struct Exec {
-        bool stdinAsArgument;
+        HashType hash;
         std.getopt.GetoptResult helpInfo;
         string[] cmd;
     }
@@ -168,7 +177,7 @@ Config parseUserArgs(string[] args) {
             // dfmt off
             data.helpInfo = std.getopt.getopt(args,
                 "c", "Part of the command to execute. Use multiple to build it", &data.cmd,
-                "stdin-as-arg", "Stdin is converted to an argument to the program", &data.stdinAsArgument,
+                "hash-by", format("Calculate the hash either by blocks of 8 byte or line from stdout (%-(%s, %))", [EnumMembers!HashType]), &data.hash,
                 );
             // dfmt on
         }
@@ -196,4 +205,9 @@ Config parseUserArgs(string[] args) {
     }
 
     return conf;
+}
+
+enum HashType {
+    block,
+    line,
 }

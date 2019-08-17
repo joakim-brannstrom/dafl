@@ -533,6 +533,8 @@ struct SpawnProcess(CallbackT) {
 
         void popFront() @safe pure nothrow {
             assert(!empty, "Can't pop front of an empty range");
+            // the lengt of the blocks to hash.
+            immutable blockLen = 8;
 
             if (data.length == 0) {
                 empty_ = true;
@@ -540,7 +542,7 @@ struct SpawnProcess(CallbackT) {
                 curr = path.next(PathNode(data[0 .. $], 0));
                 data = null;
             } else {
-                curr = path.next(PathNode(data[0 .. 8], 0));
+                curr = path.next(PathNode(data[0 .. blockLen], 0));
                 data = data[Sz .. $];
             }
         }

@@ -86,7 +86,6 @@ version (unittest) {
 }
 
 auto defaultProcessFuzzer(CallbackT = DefaultCallback)(string[] cmd,
-        Flag!"stdinAsArgument" stdinAsArgument = No.stdinAsArgument,
         CallbackT callback = CallbackT.init) {
     static if (is(CallbackT == DefaultCallback)) {
         if (callback is null)

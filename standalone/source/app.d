@@ -62,8 +62,7 @@ int cli(Config.Exec conf, string logfile) {
     }
 
     logger.info("Waiting for afl forkserver to request data");
-    auto afl = defaultProcessFuzzer(conf.cmd,
-            conf.stdinAsArgument.to!(Flag!"stdinAsArgument"), new FuzzLogger(logfile));
+    auto afl = defaultProcessFuzzer(conf.cmd, new FuzzLogger(logfile));
     afl.run;
 
     return 0;

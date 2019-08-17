@@ -85,15 +85,17 @@ version (unittest) {
     import unit_threaded.assertions;
 }
 
-auto defaultProcessFuzzer(CallbackT = DefaultCallback)(string[] cmd,
-        CallbackT callback = CallbackT.init) {
+auto defaultProcessFuzzer(CallbackT = DefaultCallback, TraceRangeT = TraceBlockRange)(
+        string[] cmd, CallbackT callback = CallbackT.init) {
     static if (is(CallbackT == DefaultCallback)) {
         if (callback is null)
             callback = new DefaultCallback;
     }
 
-    auto conf = Config!(AflBasicConstants, SpawnProcess!CallbackT, CallbackT)(
-            SpawnProcess!CallbackT(cmd, callback), callback);
+    alias SpawnProcessT = SpawnProcess!(CallbackT, TraceRangeT);
+
+    auto conf = Config!(AflBasicConstants, SpawnProcessT, CallbackT)(SpawnProcessT(cmd,
+            callback), callback);
     return makeAfl(conf);
 }
 
@@ -427,7 +429,7 @@ struct AflHashPath(alias hashFn, alias hashOffsetFn, ConstantsT) {
 /** Use for testing a binary to observer how its output data is changed
  * depending on the input.
  */
-struct SpawnProcess(CallbackT) {
+struct SpawnProcess(CallbackT, TraceRangeT) {
     static import std.process;
 
     string[] cmd;
@@ -503,61 +505,119 @@ struct SpawnProcess(CallbackT) {
             }
         }
 
-        TraceRange trace() @safe pure nothrow const @nogc {
-            return TraceRange(data.data);
+        TraceRangeT trace() @safe pure nothrow const @nogc {
+            return TraceRangeT(data.data);
+        }
+    }
+}
+
+/// Produce trace data for afl by calculating the checksum in blocks of 8 byte.
+struct TraceBlockRange {
+pure @nogc nothrow:
+    // the lengt of the blocks to hash.
+    enum Sz = 8;
+
+    const(ubyte)[] data;
+    AflHashPath!(basicHash, basicHash, AflBasicConstants) path;
+    bool empty_;
+    uint curr;
+
+    this(const(ubyte)[] data) {
+        this.data = data;
+        empty_ = data.empty;
+
+        if (!empty_)
+            popFront;
+    }
+
+    uint front() @safe pure nothrow {
+        assert(!empty, "Can't get front of an empty range");
+        return curr;
+    }
+
+    void popFront() @safe pure nothrow {
+        assert(!empty, "Can't pop front of an empty range");
+
+        if (data.length == 0) {
+            empty_ = true;
+        } else if (data.length < Sz) {
+            curr = path.next(PathNode(data[0 .. $], 0));
+            data = null;
+        } else {
+            curr = path.next(PathNode(data[0 .. Sz], 0));
+            data = data[Sz .. $];
         }
     }
 
-    static struct TraceRange {
-    pure @nogc nothrow:
-        enum Sz = 8;
-
-        const(ubyte)[] data;
-        AflHashPath!(basicHash, basicHash, AflBasicConstants) path;
-        bool empty_;
-        uint curr;
-
-        this(const(ubyte)[] data) {
-            this.data = data;
-            empty_ = data.empty;
-
-            if (!empty_)
-                popFront;
-        }
-
-        uint front() @safe pure nothrow {
-            assert(!empty, "Can't get front of an empty range");
-            return curr;
-        }
-
-        void popFront() @safe pure nothrow {
-            assert(!empty, "Can't pop front of an empty range");
-            // the lengt of the blocks to hash.
-            immutable blockLen = 8;
-
-            if (data.length == 0) {
-                empty_ = true;
-            } else if (data.length < Sz) {
-                curr = path.next(PathNode(data[0 .. $], 0));
-                data = null;
-            } else {
-                curr = path.next(PathNode(data[0 .. blockLen], 0));
-                data = data[Sz .. $];
-            }
-        }
-
-        bool empty() @safe pure nothrow const @nogc {
-            return empty_;
-        }
+    bool empty() @safe pure nothrow const @nogc {
+        return empty_;
     }
 }
 
 @("shall be a range that checksums the data in blocks")
 unittest {
-    ubyte[] data = [10];
-    foreach (const t; SpawnProcess!DefaultCallback.TraceRange(data)) {
-        t.shouldEqual(27869);
+    ubyte[] data = [10, 65];
+    foreach (const t; TraceBlockRange(data)) {
+        t.shouldEqual(63892);
     }
+}
+
+/// Produce trace data for afl by calculating the checksum for each line.
+struct TraceLineRange {
+pure @nogc nothrow:
+    const(ubyte)[] data;
+    AflHashPath!(basicHash, basicHash, AflBasicConstants) path;
+    bool empty_;
+    uint curr;
+
+    this(const(ubyte)[] data) {
+        this.data = data;
+        empty_ = data.empty;
+
+        if (!empty_)
+            popFront;
+    }
+
+    uint front() @safe pure nothrow {
+        assert(!empty, "Can't get front of an empty range");
+        return curr;
+    }
+
+    void popFront() @safe pure nothrow {
+        import std.algorithm : findSplit;
+
+        assert(!empty, "Can't pop front of an empty range");
+
+        if (data.length == 0) {
+            empty_ = true;
+            return;
+        }
+
+        // 10 is ascii for newline (LF)
+        static immutable needle = [10];
+        auto split = data.findSplit(needle);
+
+        if (split) {
+            curr = path.next(PathNode(split[0], 0));
+            data = split[2];
+        } else {
+            curr = path.next(PathNode(data, 0));
+            data = null;
+        }
+    }
+
+    bool empty() @safe pure nothrow const @nogc {
+        return empty_;
+    }
+}
+
+@("shall be a range that checksums the data by line")
+unittest {
+    ubyte[] data = [65, 10, 65, 66, 67];
+    auto t = TraceLineRange(data).array;
+    t.length.shouldEqual(2);
+    t[0].shouldEqual(63180);
+    t[1].shouldEqual(55719);
 }
 
 version (unittest) {
